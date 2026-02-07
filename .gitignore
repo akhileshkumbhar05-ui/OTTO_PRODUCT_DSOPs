@@ -1,0 +1,19 @@
+# venv
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# data/artifacts (do not commit)
+data/raw/
+data/processed/
+artifacts/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# logs
+*.log
