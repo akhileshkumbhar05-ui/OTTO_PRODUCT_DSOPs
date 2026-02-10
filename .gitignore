@@ -3,6 +3,7 @@
 venv/
 __pycache__/
 *.pyc
+!demo_assets/
 
 # data/artifacts (do not commit)
 data/raw/
