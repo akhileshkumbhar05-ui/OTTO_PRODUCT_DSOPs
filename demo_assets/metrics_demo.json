@@ -1,0 +1,9 @@
+{
+  "recall@20": 0.6473200348679276,
+  "hitrate@20": 0.8863346104725415,
+  "n_eval_sessions": 783,
+  "max_candidates": 100,
+  "elapsed_seconds": 2.76,
+  "note": "Metrics computed on demo subset (not full OTTO).",
+  "n_demo_sessions_total": 3000
+}
