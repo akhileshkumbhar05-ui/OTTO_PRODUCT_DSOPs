@@ -1,6 +1,7 @@
 # src/config.py
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 # ------------------------------------------------------------
@@ -15,47 +16,30 @@ PROCESSED_DIR = DATA_DIR / "processed"
 ARTIFACTS_DIR = ROOT / "artifacts"
 MODELS_DIR = ARTIFACTS_DIR / "models"
 
+# Demo assets (small, repo-commit friendly)
+DEMO_DIR = ROOT / "demo_assets"
+
+# Detect Hugging Face Spaces runtime
+IN_HF_SPACE = os.environ.get("SPACE_ID") is not None
+
 # Ensure dirs exist (safe to call repeatedly)
 RAW_DIR.mkdir(parents=True, exist_ok=True)
 PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
 ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
+DEMO_DIR.mkdir(parents=True, exist_ok=True)
 
 # ------------------------------------------------------------
 # Inputs
 # ------------------------------------------------------------
-# You have train.jsonl locally. Default expected location:
-#   data/raw/train.jsonl
+# Local expected dataset path (not used on HF unless you mount it)
 RAW_TRAIN_JSONL = RAW_DIR / "train.jsonl"
 
 # ------------------------------------------------------------
-# Processed outputs
+# OTTO co-visitation settings
 # ------------------------------------------------------------
-# Event-level table: [session, aid, ts, type(optional)]
-SESSIONS_PARQUET = PROCESSED_DIR / "events.parquet"
-SESSION_INDEX_PARQUET = PROCESSED_DIR / "sessions_index.parquet"
-
-# ------------------------------------------------------------
-# Candidate artifacts (names expected by src/candidates.py)
-# ------------------------------------------------------------
-# Popularity baseline: [aid, pop]
-ITEM_POPULARITY_PARQUET = ARTIFACTS_DIR / "item_popularity.parquet"
-
-# Co-visitation topk neighbors: [aid, neighbor_aid, covis]
-COVISIT_PARQUET = ARTIFACTS_DIR / "covis_topk.parquet"
-
-# OTTO covis settings
 COVIS_WINDOW = 20          # lookback window inside each session
 COVIS_TOPK_PER_ITEM = 50   # keep only top-k neighbors per aid
-
-# ------------------------------------------------------------
-# Model + evaluation artifacts
-# ------------------------------------------------------------
-# Default model path (your scripts can version this if you want)
-MODEL_PATH = MODELS_DIR / "scorer.joblib"
-
-# Metrics written by eval scripts / UI actions
-METRICS_JSON = ARTIFACTS_DIR / "metrics.json"
 
 # ------------------------------------------------------------
 # Runtime / resource caps (CPU-safe)
@@ -73,9 +57,33 @@ MAX_CANDIDATES_PER_SESSION = 100
 MAX_TRAIN_ROWS = 500_000
 
 # ------------------------------------------------------------
-# Backward-compatible aliases (so other older imports don’t break)
+# Runtime path switching (Local vs Hugging Face Spaces)
 # ------------------------------------------------------------
-# If any file still imports these older names, they will still work.
+if IN_HF_SPACE:
+    # Use demo assets committed to the repo
+    SESSIONS_PARQUET = DEMO_DIR / "events_demo.parquet"
+    SESSION_INDEX_PARQUET = DEMO_DIR / "sessions_index_demo.parquet"
+
+    ITEM_POPULARITY_PARQUET = DEMO_DIR / "item_popularity_demo.parquet"
+    COVISIT_PARQUET = DEMO_DIR / "covis_topk_demo.parquet"
+
+    MODEL_PATH = DEMO_DIR / "scorer_demo.joblib"
+    METRICS_JSON = DEMO_DIR / "metrics_demo.json"
+
+else:
+    # Local full pipeline artifacts
+    SESSIONS_PARQUET = PROCESSED_DIR / "events.parquet"
+    SESSION_INDEX_PARQUET = PROCESSED_DIR / "sessions_index.parquet"
+
+    ITEM_POPULARITY_PARQUET = ARTIFACTS_DIR / "item_popularity.parquet"
+    COVISIT_PARQUET = ARTIFACTS_DIR / "covis_topk.parquet"
+
+    MODEL_PATH = MODELS_DIR / "scorer.joblib"
+    METRICS_JSON = ARTIFACTS_DIR / "metrics.json"
+
+# ------------------------------------------------------------
+# Backward-compatible aliases (older imports won’t break)
+# ------------------------------------------------------------
 POPULARITY_PARQUET = ITEM_POPULARITY_PARQUET
 COVIS_TOPK_PARQUET = COVISIT_PARQUET
 COVIS_TOPK = COVIS_TOPK_PER_ITEM
