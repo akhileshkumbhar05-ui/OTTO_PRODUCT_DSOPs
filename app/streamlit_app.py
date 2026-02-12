@@ -4,6 +4,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 import sys
+from collections import Counter
 
 import numpy as np
 import pandas as pd
@@ -14,29 +15,21 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.config import (
-    SESSIONS_PARQUET_UI,
-    ITEM_POPULARITY_PARQUET_UI,
-    COVISIT_PARQUET_UI,
-    MODEL_PATH_UI,
-    METRICS_JSON_UI,
+    SESSIONS_PARQUET,
+    METRICS_JSON,
+    MODEL_PATH,
+    ITEM_POPULARITY_PARQUET,
+    COVISIT_PARQUET,
 )
 
-from src.candidates import make_candidates_for_session
-
-# Prefer fast scoring if you have it, else fallback
-try:
-    from src.model import ScorerBundle, score_candidates_fast as _score_fast
-    HAS_FAST = True
-except Exception:
-    HAS_FAST = False
-
-from src.model import load_model, score_candidates
-
+# Optional explain (won't crash if missing)
 try:
     from src.model import explain_one_prediction
     HAS_EXPLAIN = True
 except Exception:
     HAS_EXPLAIN = False
+
+DEMO_DIR = ROOT / "demo_assets"
 
 
 def _rel(p: Path) -> str:
@@ -46,90 +39,179 @@ def _rel(p: Path) -> str:
         return p.name
 
 
+def _pick_assets():
+    # full paths
+    events_path = Path(SESSIONS_PARQUET)
+    pop_path = Path(ITEM_POPULARITY_PARQUET)
+    covis_path = Path(COVISIT_PARQUET)
+    model_path = Path(MODEL_PATH)
+    metrics_path = Path(METRICS_JSON)
+
+    # demo fallbacks
+    demo_events = DEMO_DIR / "events_demo.parquet"
+    demo_pop = DEMO_DIR / "item_popularity_demo.parquet"
+    demo_covis = DEMO_DIR / "covis_topk_demo.parquet"
+    demo_model = DEMO_DIR / "scorer_demo.joblib"
+    demo_metrics = DEMO_DIR / "metrics_demo.json"
+
+    if not events_path.exists() and demo_events.exists():
+        events_path = demo_events
+    if not pop_path.exists() and demo_pop.exists():
+        pop_path = demo_pop
+    if not covis_path.exists() and demo_covis.exists():
+        covis_path = demo_covis
+    if not model_path.exists() and demo_model.exists():
+        model_path = demo_model
+    if not metrics_path.exists() and demo_metrics.exists():
+        metrics_path = demo_metrics
+
+    return events_path, pop_path, covis_path, model_path, metrics_path
+
+
+EVENTS_PATH, POP_PATH, COVIS_PATH, MODEL_FILE, METRICS_FILE = _pick_assets()
+
 st.set_page_config(page_title="OTTO Session Recommender", layout="wide")
 st.title("OTTO Session Recommender (End-to-End DS-Ops)")
-st.caption("Ingest → train → evaluate → serve → interpret (demo assets used on cloud).")
+st.caption("Ingest → train → evaluate → serve → interpret (where available).")
 
-
-# ---- Guardrails (now checks UI paths which fallback to demo_assets/)
-required = [
-    (SESSIONS_PARQUET_UI, "events parquet"),
-    (ITEM_POPULARITY_PARQUET_UI, "popularity parquet"),
-    (COVISIT_PARQUET_UI, "covis parquet"),
-    (MODEL_PATH_UI, "model file"),
-]
-missing = [f"- {name}: `{_rel(p)}`" for p, name in required if not Path(p).exists()]
+# ---- Guardrails
+missing = []
+for p, label in [
+    (EVENTS_PATH, "events parquet"),
+    (POP_PATH, "popularity parquet"),
+    (COVIS_PATH, "covis parquet"),
+    (MODEL_FILE, "model file"),
+]:
+    if not Path(p).exists():
+        missing.append(f"{label}: `{_rel(Path(p))}`")
 
 if missing:
-    st.error(
-        "Missing required assets:\n\n"
-        + "\n".join(missing)
-        + "\n\nFix: commit `demo_assets/` to the repo (events_demo/pop/covis/model/metrics)."
-    )
+    st.error("Missing required assets:\n\n" + "\n".join([f"- {m}" for m in missing]))
     st.stop()
 
-
+# ---- Cached loads (keep them LIGHT)
 @st.cache_data(show_spinner=False)
 def load_events(path: Path) -> pd.DataFrame:
-    df = pd.read_parquet(path)
-    return df[["session", "aid", "ts"]].copy()
-
-
-@st.cache_data(show_spinner=False)
-def load_pop(path: Path) -> pd.DataFrame:
-    return pd.read_parquet(path)
-
+    df = pd.read_parquet(path, columns=["session", "aid", "ts"])
+    return df
 
 @st.cache_data(show_spinner=False)
-def load_covis(path: Path) -> pd.DataFrame:
-    return pd.read_parquet(path)
+def load_pop_df(path: Path) -> pd.DataFrame:
+    return pd.read_parquet(path, columns=["aid", "pop"])
 
+@st.cache_data(show_spinner=False)
+def load_covis_df(path: Path) -> pd.DataFrame:
+    return pd.read_parquet(path, columns=["aid", "neighbor_aid", "covis"])
 
 @st.cache_data(show_spinner=False)
 def load_metrics(path: Path):
-    if not Path(path).exists():
+    if not path.exists():
         return None
     import json
     try:
-        return json.loads(Path(path).read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return None
 
-
-events = load_events(Path(SESSIONS_PARQUET_UI))
-pop_df = load_pop(Path(ITEM_POPULARITY_PARQUET_UI))
-covis_df = load_covis(Path(COVISIT_PARQUET_UI))
-metrics = load_metrics(Path(METRICS_JSON_UI))
-
-import joblib
-
 @st.cache_resource(show_spinner=False)
-def load_bundle_from_path(model_path: Path):
+def load_bundle(model_path: Path):
+    import joblib
     obj = joblib.load(model_path)
-    return obj  # expects {"scaler": ..., "model": ...}
+    return obj  # {"scaler":..., "model":...}
 
-model_obj = load_bundle_from_path(Path(MODEL_PATH_UI))
+events = load_events(EVENTS_PATH)
+pop_df = load_pop_df(POP_PATH)
+covis_df = load_covis_df(COVIS_PATH)
+metrics = load_metrics(METRICS_FILE)
+model_obj = load_bundle(MODEL_FILE)
+
+# Precompute small, cheap things
+POP_TOP = pop_df.sort_values("pop", ascending=False)["aid"].astype(int).tolist()
+POP_MAP = dict(zip(pop_df["aid"].astype(int), pop_df["pop"].astype(float)))
+
+def build_small_covis_map(covis_df: pd.DataFrame, seed_items: list[int]) -> dict[int, list[tuple[int, int]]]:
+    """Only keep covis rows for the last few items in the session."""
+    if not seed_items:
+        return {}
+    sub = covis_df[covis_df["aid"].isin(seed_items)]
+    out: dict[int, list[tuple[int, int]]] = {}
+    for aid, g in sub.groupby("aid", sort=False):
+        out[int(aid)] = list(
+            zip(g["neighbor_aid"].astype(int).tolist(), g["covis"].astype(int).tolist())
+        )
+    return out
+
+def make_candidates_fast(
+    session_aids: list[int],
+    pop_top: list[int],
+    pop_map: dict[int, float],
+    covis_map_small: dict[int, list[tuple[int, int]]],
+    max_candidates: int = 100,
+    seed_last_n: int = 5,
+) -> list[int]:
+    if not session_aids:
+        return pop_top[:max_candidates]
+
+    seed_items = session_aids[-seed_last_n:]
+    scores = Counter()
+
+    # covis neighbors
+    for a in seed_items:
+        for n, c in covis_map_small.get(int(a), []):
+            scores[int(n)] += float(c)
+
+    # popularity fallback
+    for aid in pop_top[:200]:
+        scores[int(aid)] += 0.01 * float(pop_map.get(int(aid), 0.0))
+
+    # slight boost for recently seen
+    for a in set(session_aids[-10:]):
+        scores[int(a)] += 0.1
+
+    ranked = [aid for aid, _ in scores.most_common(max_candidates)]
+    if len(ranked) < max_candidates:
+        ranked += pop_top
+        ranked = list(dict.fromkeys(ranked))[:max_candidates]
+    return ranked
+
+def score_candidates_fast(session_aids, candidates, pop_map, covis_map_small, model_obj):
+    # features MUST match src/model.py feature order
+    def featurize(candidate_aid: int) -> np.ndarray:
+        pop = np.log1p(pop_map.get(int(candidate_aid), 0.0))
+
+        covis_score = 0.0
+        for seed in session_aids[-5:]:
+            for n, c in covis_map_small.get(int(seed), []):
+                if int(n) == int(candidate_aid):
+                    covis_score += float(c)
+        covis_score = np.log1p(covis_score)
+
+        recency = 1.0 if int(candidate_aid) in set(map(int, session_aids[-10:])) else 0.0
+        seen = 1.0 if int(candidate_aid) in set(map(int, session_aids)) else 0.0
+
+        return np.array([pop, covis_score, recency, seen], dtype=np.float32)
+
+    X = np.vstack([featurize(int(c)) for c in candidates]).astype(np.float32)
+    Xs = model_obj["scaler"].transform(X)
+    probs = model_obj["model"].predict_proba(Xs)[:, 1]
+    return sorted(zip(candidates, probs.tolist()), key=lambda x: x[1], reverse=True)
 
 # ---- Sidebar
 st.sidebar.header("Serving Settings")
-max_candidates = st.sidebar.slider("Max candidates per session", 30, 300, 100, 10)
+max_candidates = st.sidebar.slider("Max candidates per session", 30, 200, 100, 10)
 top_k = st.sidebar.slider("Top-K recommendations", 5, 50, 20, 5)
 
 st.sidebar.divider()
 st.sidebar.subheader("Artifacts (relative)")
-st.sidebar.write(f"Events: `{_rel(Path(SESSIONS_PARQUET_UI))}`")
-st.sidebar.write(f"Popularity: `{_rel(Path(ITEM_POPULARITY_PARQUET_UI))}`")
-st.sidebar.write(f"Covis: `{_rel(Path(COVISIT_PARQUET_UI))}`")
-st.sidebar.write(f"Model: `{_rel(Path(MODEL_PATH_UI))}`")
-st.sidebar.write(f"Metrics: `{_rel(Path(METRICS_JSON_UI))}`")
-
+st.sidebar.write(f"Model: `{_rel(MODEL_FILE)}`")
+st.sidebar.write(f"Events: `{_rel(EVENTS_PATH)}`")
+st.sidebar.write(f"Popularity: `{_rel(POP_PATH)}`")
+st.sidebar.write(f"Covis: `{_rel(COVIS_PATH)}`")
+st.sidebar.write(f"Metrics: `{_rel(METRICS_FILE)}`")
 
 tab_reco, tab_metrics, tab_explain = st.tabs(["🔮 Recommend", "📏 Metrics", "🧠 Explain (optional)"])
 
-
-# ============================================================
-# TAB 1: Recommend
-# ============================================================
+# ---- Recommend
 with tab_reco:
     left, right = st.columns([1.1, 0.9], gap="large")
 
@@ -140,45 +222,56 @@ with tab_reco:
             "Choose input mode",
             ["Pick a session_id (from subset)", "Paste custom session aids"],
             horizontal=True,
-            key="mode",
         )
 
         context_aids: list[int] = []
 
         if input_mode.startswith("Pick"):
             session_ids = events["session"].drop_duplicates().astype(int).tolist()
-            sid = st.selectbox("session_id", session_ids[:5000], key="sid")
+            sid = st.selectbox("session_id", session_ids[:5000])
             g = events[events["session"] == int(sid)].sort_values("ts")
             context_aids = g["aid"].astype(int).tolist()
             st.markdown("**Session (last 20 aids)**")
             st.json(context_aids[-20:])
         else:
-            txt = st.text_area("Paste aids (comma-separated)", value="1098089,1354785,342507,1120175", key="txt")
-            try:
-                context_aids = [int(x.strip()) for x in txt.split(",") if x.strip()]
-            except Exception:
-                st.error("Could not parse aids. Example: 1098089,1354785,342507")
-                st.stop()
+            txt = st.text_area("Paste aids (comma-separated)", value="1098089,1354785,342507,1120175")
+            context_aids = [int(x.strip()) for x in txt.split(",") if x.strip()]
 
-        run = st.button("Recommend", type="primary", key="recommend_btn")
+        if st.button("Recommend", type="primary"):
+            st.session_state["do_reco"] = True
+            st.session_state["context_aids"] = context_aids
 
     with right:
         st.subheader("Build / Eval Status")
         if metrics:
             st.json(metrics)
         else:
-            st.info("No metrics found (demo mode can include metrics_demo.json).")
+            st.info("No metrics found (metrics json missing/invalid).")
 
-    if run:
+    if st.session_state.get("do_reco", False):
         try:
             with st.spinner("Generating & scoring candidates..."):
                 t0 = time.time()
+                context_aids = st.session_state.get("context_aids", [])
 
-                cands = make_candidates_for_session(
-                    context_aids, pop_df, covis_df, max_candidates=max_candidates
+                seeds = [int(x) for x in context_aids[-5:]]
+                covis_map_small = build_small_covis_map(covis_df, seeds)
+
+                cands = make_candidates_fast(
+                    session_aids=context_aids,
+                    pop_top=POP_TOP,
+                    pop_map=POP_MAP,
+                    covis_map_small=covis_map_small,
+                    max_candidates=max_candidates,
                 )
 
-                ranked = score_candidates(context_aids, cands, pop_df, covis_df, model_obj)[:top_k]
+                ranked = score_candidates_fast(
+                    session_aids=context_aids,
+                    candidates=cands,
+                    pop_map=POP_MAP,
+                    covis_map_small=covis_map_small,
+                    model_obj=model_obj,
+                )[:top_k]
 
                 t1 = time.time()
 
@@ -186,8 +279,7 @@ with tab_reco:
             c1, c2 = st.columns(2, gap="large")
             with c1:
                 st.subheader("Top Recommendations")
-                st.dataframe(pd.DataFrame(ranked, columns=["aid", "score"]),
-                             use_container_width=True, hide_index=True)
+                st.dataframe(pd.DataFrame(ranked, columns=["aid", "score"]), use_container_width=True, hide_index=True)
             with c2:
                 st.subheader("Session context (last 20)")
                 st.json(context_aids[-20:])
@@ -195,13 +287,10 @@ with tab_reco:
             st.caption(f"Latency: {round(t1 - t0, 2)} seconds (CPU)")
 
         except Exception as e:
-            st.error("Recommend failed. Full error below.")
+            st.error("Recommend crashed. Here is the full error:")
             st.exception(e)
 
-
-# ============================================================
-# TAB 2: Metrics
-# ============================================================
+# ---- Metrics
 with tab_metrics:
     st.subheader("Offline Metrics")
     if metrics:
@@ -209,54 +298,25 @@ with tab_metrics:
     else:
         st.info("No metrics available.")
 
-
-# ============================================================
-# TAB 3: Explain
-# ============================================================
+# ---- Explain
 with tab_explain:
     st.subheader("SHAP-style explanation (optional)")
-
     if not HAS_EXPLAIN:
         st.warning("explain_one_prediction() not available in src/model.py")
     else:
         session_ids = events["session"].drop_duplicates().astype(int).tolist()
         sid = st.selectbox("session_id (explain)", session_ids[:5000], key="explain_sid")
+
         g = events[events["session"] == int(sid)].sort_values("ts")
         context_aids = g["aid"].astype(int).tolist()
 
         default_cand = str(context_aids[-1]) if context_aids else "0"
-        txt = st.text_input("candidate aid to explain", value=default_cand, key="cand")
-
-        try:
-            cand = int(txt.strip())
-        except Exception:
-            st.error("candidate aid must be an int")
-            st.stop()
+        txt = st.text_input("candidate aid to explain", value=default_cand, key="explain_candidate")
 
         if st.button("Explain", type="primary", key="explain_btn"):
             try:
-                with st.spinner("Computing explanation..."):
-                    exp = explain_one_prediction(context_aids, cand, pop_df, covis_df, bundle)
-
-                contrib = np.array(exp["contrib"], dtype=float)
-                feature_names = list(exp["feature_names"])
-
-                order = np.argsort(np.abs(contrib))[::-1]
-                contrib = contrib[order]
-                feature_names = [feature_names[i] for i in order]
-
-                import matplotlib.pyplot as plt
-                fig = plt.figure()
-                plt.barh(feature_names[::-1], contrib[::-1])
-                plt.title(f"SHAP-style contributions (method: {exp.get('method', 'linear')})")
-                st.pyplot(fig, clear_figure=True)
-
-                st.caption(
-                    f"Pred prob: {float(exp.get('prob', 0.0)):.4f} | "
-                    f"candidate_aid: {int(exp.get('candidate_aid', cand))} | "
-                    f"logit: {float(exp.get('score_logit', 0.0)):.3f}"
-                )
-
+                exp = explain_one_prediction(context_aids, int(txt.strip()), pop_df, covis_df, None)  # bundle handled inside your function
+                st.json(exp)
             except Exception as e:
-                st.error("Explain failed. Full error below.")
+                st.error("Explain crashed. Full error:")
                 st.exception(e)
