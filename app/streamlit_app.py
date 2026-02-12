@@ -248,49 +248,72 @@ with tab_reco:
         else:
             st.info("No metrics found (metrics json missing/invalid).")
 
-    if st.session_state.get("do_reco", False):
-        try:
-            with st.spinner("Generating & scoring candidates..."):
-                t0 = time.time()
-                context_aids = st.session_state.get("context_aids", [])
+    # --- always show last error/result (outside the click block) ---
+if "last_error" in st.session_state and st.session_state["last_error"]:
+    st.error("Last backend error:")
+    st.code(st.session_state["last_error"])
 
-                seeds = [int(x) for x in context_aids[-5:]]
-                covis_map_small = build_small_covis_map(covis_df, seeds)
+if "last_ranked" in st.session_state and st.session_state["last_ranked"] is not None:
+    st.subheader("Last Recommendations (persisted)")
+    st.dataframe(
+        pd.DataFrame(st.session_state["last_ranked"], columns=["aid", "score"]),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.caption(f"Last latency: {st.session_state.get('last_latency', None)} sec")
+# --- recommend compute block ---
+if st.session_state.get("do_reco", False):
+    st.session_state["last_error"] = None  # clear previous error
 
-                cands = make_candidates_fast(
-                    session_aids=context_aids,
-                    pop_top=POP_TOP,
-                    pop_map=POP_MAP,
-                    covis_map_small=covis_map_small,
-                    max_candidates=max_candidates,
-                )
+    try:
+        with st.spinner("Generating & scoring candidates..."):
+            t0 = time.time()
 
-                ranked = score_candidates_fast(
-                    session_aids=context_aids,
-                    candidates=cands,
-                    pop_map=POP_MAP,
-                    covis_map_small=covis_map_small,
-                    model_obj=model_obj,
-                )[:top_k]
+            context_aids = st.session_state.get("context_aids", [])
+            if not context_aids:
+                raise ValueError("context_aids is empty. Button click didn't set it correctly.")
 
-                t1 = time.time()
+            seeds = [int(x) for x in context_aids[-5:]]
+            covis_map_small = build_small_covis_map(covis_df, seeds)
 
-            st.markdown("---")
-            c1, c2 = st.columns(2, gap="large")
-            with c1:
-                st.subheader("Top Recommendations")
-                st.dataframe(pd.DataFrame(ranked, columns=["aid", "score"]), use_container_width=True, hide_index=True)
-            with c2:
-                st.subheader("Session context (last 20)")
-                st.json(context_aids[-20:])
+            # DEBUG markers (these help you know where it dies)
+            st.write("debug: seeds ok, building candidates...")
 
-            st.caption(f"Latency: {round(t1 - t0, 2)} seconds (CPU)")
+            cands = make_candidates_fast(
+                session_aids=context_aids,
+                pop_top=POP_TOP,
+                pop_map=POP_MAP,
+                covis_map_small=covis_map_small,
+                max_candidates=max_candidates,
+            )
 
-        except Exception as e:
-            st.error("Recommend crashed. Here is the full error:")
-            st.exception(e)
-        finally:
-            st.session_state["do_reco"] = False
+            st.write("debug: candidates built:", len(cands), "scoring...")
+
+            ranked = score_candidates_fast(
+                session_aids=context_aids,
+                candidates=cands,
+                pop_map=POP_MAP,
+                covis_map_small=covis_map_small,
+                model_obj=model_obj,
+            )[:top_k]
+
+            t1 = time.time()
+
+        # Persist outputs so reruns don't wipe UI
+        st.session_state["last_ranked"] = ranked
+        st.session_state["last_latency"] = round(t1 - t0, 2)
+
+        st.success("Recommend finished.")
+        st.write("debug: finished compute")
+
+    except Exception:
+        st.session_state["last_error"] = traceback.format_exc()
+        st.error("Recommend crashed. Traceback saved above.")
+        st.code(st.session_state["last_error"])
+
+    finally:
+        st.session_state["do_reco"] = False
+
 # ---- Metrics
 with tab_metrics:
     st.subheader("Offline Metrics")
