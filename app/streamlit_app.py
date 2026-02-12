@@ -289,7 +289,8 @@ with tab_reco:
         except Exception as e:
             st.error("Recommend crashed. Here is the full error:")
             st.exception(e)
-
+        finally:
+            st.session_state["do_reco"] = False
 # ---- Metrics
 with tab_metrics:
     st.subheader("Offline Metrics")
