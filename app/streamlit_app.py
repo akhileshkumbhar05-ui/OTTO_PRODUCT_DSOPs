@@ -101,11 +101,14 @@ pop_df = load_pop(Path(ITEM_POPULARITY_PARQUET_UI))
 covis_df = load_covis(Path(COVISIT_PARQUET_UI))
 metrics = load_metrics(Path(METRICS_JSON_UI))
 
-bundle = load_model()  # this loads from MODEL_PATH in config; OK if you made MODEL_PATH_UI primary
-# If your load_model() always uses MODEL_PATH (not MODEL_PATH_UI), do this instead:
-# import joblib
-# obj = joblib.load(Path(MODEL_PATH_UI))
-# bundle = ScorerBundle(scaler=obj["scaler"], model=obj["model"])
+import joblib
+
+@st.cache_resource(show_spinner=False)
+def load_bundle_from_path(model_path: Path):
+    obj = joblib.load(model_path)
+    return obj  # expects {"scaler": ..., "model": ...}
+
+model_obj = load_bundle_from_path(Path(MODEL_PATH_UI))
 
 # ---- Sidebar
 st.sidebar.header("Serving Settings")
@@ -175,7 +178,7 @@ with tab_reco:
                     context_aids, pop_df, covis_df, max_candidates=max_candidates
                 )
 
-                ranked = score_candidates(context_aids, cands, pop_df, covis_df, bundle)[:top_k]
+                ranked = score_candidates(context_aids, cands, pop_df, covis_df, model_obj)[:top_k]
 
                 t1 = time.time()
 
