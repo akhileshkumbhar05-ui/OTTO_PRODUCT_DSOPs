@@ -267,3 +267,34 @@ def explain_one_prediction(
         "bias": float(b),
         "score_logit": score_logit,
     }
+def score_candidates_fast(
+    session_aids: List[int],
+    candidates: List[int],
+    pop_map: Dict[int, float],
+    covis_map: Dict[int, List[Tuple[int, int]]],
+    bundle: ScorerBundle,
+) -> List[Tuple[int, float]]:
+    """
+    Faster scorer that avoids building maps from DataFrames every call.
+    Expects pop_map + covis_map already prepared by the caller.
+
+    Returns: list of (aid, probability) sorted desc.
+    """
+    if not candidates:
+        return []
+
+    feats = np.vstack(
+        [
+            _features_for_candidate(int(c), session_aids, pop_map, covis_map)
+            for c in candidates
+        ]
+    )
+    feats_s = bundle.scaler.transform(feats)
+    probs = bundle.model.predict_proba(feats_s)[:, 1]
+
+    ranked = sorted(
+        zip([int(c) for c in candidates], probs.astype(float).tolist()),
+        key=lambda x: x[1],
+        reverse=True,
+    )
+    return ranked
