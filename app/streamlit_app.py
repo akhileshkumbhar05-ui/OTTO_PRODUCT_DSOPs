@@ -27,7 +27,7 @@ from src.config import (
     METRICS_JSON,
 )
 from src.candidates import make_candidates_for_session
-from src.model import ScorerBundle, score_candidates
+from src.model import ScorerBundle, score_candidates_fast
 
 # Optional explain
 try:
@@ -251,7 +251,7 @@ with tab_reco:
                 cands = make_candidates_for_session(
                     context_aids, pop_df, covis_df, max_candidates=max_candidates
                 )
-                ranked = score_candidates(
+                ranked = score_candidates_fast(
                     context_aids, cands, pop_df, covis_df, bundle
                 )[:top_k]
                 t1 = time.time()
@@ -373,7 +373,7 @@ with tab_diag:
 
             t0 = time.time()
             cands = make_candidates_for_session(context, pop_df, covis_df, max_candidates=50)
-            ranked = score_candidates(context, cands, pop_df, covis_df, bundle)[:10]
+            ranked = score_candidates_fast(context, cands, pop_df, covis_df, bundle)[:10]
             t1 = time.time()
 
             st.success(f"Self-test OK in {round(t1 - t0, 3)}s")
